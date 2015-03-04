@@ -25,7 +25,9 @@ metadata {
         attribute "language", "string"
         attribute "insideIndicatorLight", "string"
         attribute "operatingMode", "string"
+        attribute "schedule", "string"
 
+		command "test"
 		command "unlockwtimeout"
         
         command "toggleOneTouchLocking"
@@ -60,6 +62,20 @@ metadata {
         
         command "getValues", ["string"]
         
+        command "clearRepeatingSchedule", [ "number", "number"]
+        command "clearUserRepeatingSchedules", ["number"]
+        command "clearAllUserSchedules", ["number"]
+        command "getRepeatingSchedule", ["number", "number" ]
+        command "setRepeatingSchedule", ["number", "number", "number", "number", "number", "number", "number"]
+        command "enableAll"
+        command "enable", ["number"]
+        command "getScheduleTimeOffset"
+        command "setScheduleTimeOffset", ["string" ]
+        command "getWeekDaySchedule", ["number", "number" ]
+        command "setWeekDaySchedule", ["number", "number", "number", "number", "number", "number", "number", "number"]
+        command "getYearDaySchedule", ["number", "number" ]
+        command "setYearDaySchedule", ["number", "number", "number", "number", "number", "number", "number", "number", "number", "number", "number", "number"]
+        
 		fingerprint deviceId: "0x4003", inClusters: "0x72, 0x86, 0x98"
 	}
        
@@ -69,9 +85,7 @@ metadata {
     device types is limited to settings for the device type instance, and not the configuration
     settings for the device being controlled. While the settings values are updated and readable
     by the device type and device type handler, it is not possible to set those variables with
-    values queried from the device, nor is there an opportunity to send these values back to
-    the device after they are changed by the user. (refreshAfterSelection doesn't work for inputs
-    in device types, likely because it's supported by dynamic pages.
+    values queried from the device.
     
     ╯°□°）╯︵-┻━┻
     
@@ -206,6 +220,7 @@ metadata {
 
 import physicalgraph.zwave.commands.doorlockv1.*
 import physicalgraph.zwave.commands.usercodev1.*
+import static java.util.Calendar.*
 
 def parse(String description) {
 	def result = null
@@ -338,19 +353,31 @@ def zwaveEvent(physicalgraph.zwave.commands.alarmv2.AlarmReport cmd) {
 				break
 		}
 	} else switch(cmd.alarmType) {
-		case 21:  // Manually locked
-		case 18:  // Locked with keypad
-		case 24:  // Locked by command (Kwikset 914)
+		case 21:
+        	map = [ name: "lock", value: "locked" ]
+        	switch (cmd.alarmLevel) {
+            	case 0x01:
+                	map["descriptionText"] = "$device.displayName manually locked"
+                    break
+                case 0x02:
+					map["descriptionText"] = "$device.displayName locked with one-touch locking"
+                    break
+                default:
+                	map["descriptionText"] = "$device.displayName locked (event code ${cmd.alarmLevel})"
+                    break
+            }
+            break            	
+		case 18:
+        	map = [ name: "lock", value: "locked", descriptionText: "$device.displayName locked by user ${cmd.alarmLevel}", data: [ userIdentifier: cmd.alarmLevel ] ]
+            break
+		case 24:
+        	map = [ name: "lock", value: "locked", descriptionText: "$device.displayName locked via remote command" ]
+            break
 		case 27:  // Autolocked
-			map = [ name: "lock", value: "locked" ]
+			map = [ name: "lock", value: "locked", descriptionText: "$device.displayName locked automatically" ]
 			break
-		case 16:  // Note: for levers this means it's unlocked, for non-motorized deadbolt, it's just unsecured and might not get unlocked
 		case 19:
-			map = [ name: "lock", value: "unlocked" ]
-			if (cmd.alarmLevel) {
-				map.descriptionText = "$device.displayName was unlocked with code $cmd.alarmLevel"
-				map.data = [ usedCode: cmd.alarmLevel ]
-			}
+			map = [ name: "unlock", value: "unlocked", descriptionText: "$device.displayName locked by user ${cmd.alarmLevel}", data: [ userIdentifier: cmd.alarmLevel ] ]
 			break
 		case 22:
 		case 25:  // Kwikset 914 unlocked by command
@@ -413,6 +440,7 @@ def zwaveEvent(physicalgraph.zwave.commands.alarmv2.AlarmReport cmd) {
 }
 
 def zwaveEvent(UserCodeReport cmd) {
+	log.debug("UserCodeReport: $cmd")
 	def result = []
 	def name = "code$cmd.userIdentifier"
 	def code = cmd.code
@@ -434,7 +462,7 @@ def zwaveEvent(UserCodeReport cmd) {
 			map = [ name: "codeReport", value: cmd.userIdentifier, data: [ code: code ] ]
 			map.descriptionText = "$device.displayName code $cmd.userIdentifier is set"
 			map.displayed = (cmd.userIdentifier != state.requestCode && cmd.userIdentifier != state.pollCode)
-			map.isStateChange = (code != state[name])
+			map.isStateChange = true
 		}
 		result << createEvent(map)
 	} else {
@@ -598,10 +626,187 @@ def zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport 
     return result;
 }
 
+
+def zwaveEvent(physicalgraph.zwave.commands.scheduleentrylockv3.ScheduleEntryLockDailyRepeatingReport cmd) {
+/*
+Short	durationHour
+Short	durationMinute
+Short	scheduleSlotId
+Short	startHour
+Short	startMinute
+Short	userIdentifier
+Short	weekDayBitmask
+*/
+	log.debug("ScheduleEntryLockDailyRepeatingReport $cmd")
+    if (state.codeSchedule == null) {
+    	state.codeSchedule = [:]
+    }
+    if (state.codeSchedule.dailyRepeating == null) {
+    	state.codeSchedule.dailyRepeating = [:]
+    }
+    state.codeSchedule.dailyRepeating."${cmd.scheduleSlotId}" = [ durationHour: cmd.durationHour,
+    													 		  durationMinute: cmd.durationMinute,
+                                                                  startHour: cmd.startHour,
+                                                                  startMinute: cmd.startMinute,
+                                                                  userIdentifier: cmd.userIdentifier,
+                                                                  weekDayBitmask: cmd.weekDayBitmask ]
+                                                        
+    createEvent(name: "schedule", value: state.codeSchedule, data: [ type: "dailyRepeating", slotChanged : cmd.scheduleSlotId ])
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.scheduleentrylockv3.ScheduleEntryLockTimeOffsetReport cmd) {
+/*
+Short	hourTzo
+Short	minuteOffsetDst
+Short	minuteTzo
+Boolean	signOffsetDst
+Boolean	signTzo
+*/
+	log.debug("ScheduleEntryLockTimeOffsetReport $cmd")
+    if (state.time == null) {
+    	state.time = [:]
+    }
+    state.time.offset = [ hourTzo: cmd.hourTzo,
+                          minuteOffsetDst: cmd.minuteOffsetDst,
+                          minuteTzo: cmd.minuteTzo,
+                          signOffsetDst: cmd.signOffsetDst,
+                          signTzo: cmd.signTzo ]
+    
+    def result = []
+    if (state.time.delta == null) {
+    	result << response(getTimeParameters())
+    }
+    result                                                       
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.scheduleentrylockv3.ScheduleEntryLockWeekDayReport  cmd) {
+/*
+Short	dayOfWeek
+Short	scheduleSlotId
+Short	startHour
+Short	startMinute
+Short	stopHour
+Short	stopMinute
+Short	userIdentifier
+*/
+	log.debug("ScheduleEntryLockWeekDayReport $cmd")
+    if (state.codeSchedule == null) {
+    	state.codeSchedule = [:]
+    }
+    if (state.codeSchedule.weekDay == null) {
+    	state.codeSchedule.weekDay = [:]
+    }
+    state.codeSchedule.weekDay."${cmd.scheduleSlotId}" = [ dayOfWeek: cmd.dayOfWeek,
+                                                           startHour: cmd.startHour,
+                                                           startMinute: cmd.startMinute,
+                                                           stopHour: cmd.stopHour,
+                                                           stopMinute: cmd.stopMinute,
+                                                           userIdentifier: cmd.userIdentifier ]
+                                                        
+    createEvent(name: "schedule", value: state.codeSchedule, data: [ type: "weekDay", slotChanged : cmd.scheduleSlotId ])
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.scheduleentrylockv3.ScheduleEntryLockYearDayReport  cmd) {
+/*
+Short	scheduleSlotId
+Short	startDay
+Short	startHour
+Short	startMinute
+Short	startMonth
+Short	startYear
+Short	stopDay
+Short	stopHour
+Short	stopMinute
+Short	stopMonth
+Short	stopYear
+Short	userIdentifier
+*/
+	log.debug("ScheduleEntryLockYearDayReport $cmd")
+    if (state.codeSchedule == null) {
+    	state.codeSchedule = [:]
+    }
+    if (state.codeSchedule.slot == null) {
+    	state.codeSchedule.slot = [:]
+    }
+    state.codeSchedule.yearDay."${cmd.scheduleSlotId}" = [ startDay: cmd.startDay,
+                                                           startHour: cmd.startHour,
+                                                           startMinute: cmd.startMinute,
+                                                           startMonth: cmd.startMonth,
+                                                           startYear: cmd.startYear,
+                                                           stopDay: cmd.stopDay,
+                                                           stopHour: cmd.stopHour,
+                                                           stopMinute: cmd.stopMinute,
+                                                           stopMonth: cmd.stopMonth,
+                                                           stopYear: cmd.stopYear,
+                                                           userIdentifier: cmd.userIdentifier ]
+                                                        
+    createEvent(name: "schedule", value: state.codeSchedule, data: [ type: "yearDay", slotChanged : cmd.scheduleSlotId ])
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.scheduleentrylockv3.ScheduleEntryTypeSupportedReport cmd) {
+/*
+Short	numberOfSlotsDailyRepeating
+Short	numberOfSlotsWeekDay
+Short	numberOfSlotsYearDay
+*/
+	log.debug("ScheduleEntryTypeSupportedReport: $cmd")
+	if (state.codeSchedule == null) {
+    	state.codeSchedule = [:]
+    }
+    state.codeSchedule.numberOfSlotsDailyRepeating = cmd.numberOfSlotsDailyRepeating
+    state.codeSchedule.numberOfSlotsWeekDay = cmd.numberOfSlotsWeekDay
+    state.codeSchedule.numberOfSlotsYearDay = cmd.numberOfSlotsYearDay
+    
+	[]
+}
+
+def zwaveEvent(physicalgraph.zwave.commands.timeparametersv1.TimeParametersReport cmd) {
+/*
+Short	day
+Short	hourUtc
+Short	minuteUtc
+Short	month
+Short	secondUtc
+Integer	year
+*/
+
+	// Track the delta between the time in the report and the current time,
+    // so that we can display device time without constantly querying for
+    // the current value.
+    
+	def now = new Date()
+    
+	log.debug("TimeParametersReport: $cmd")
+    def map = [ year   : now[YEAR]         - cmd.year,
+    			month  : now[MONTH]        - cmd.month,
+                day    : now[DAY_OF_MONTH] - cmd.day,
+                hour   : now[HOUR_OF_DAY]  - cmd.hourUtc,
+                minute : now[MINUTE]       - cmd.minuteUtc,
+                second : now[SECOND]       - cmd.secondUtc ]
+    if (state.time == null) {
+    	state.time = [:]
+    }
+    
+    state.time.delta = map
+    
+    def result = []
+    if (state.time.offset == null) {
+    	result << response(getScheduleTimeOffset())
+    }
+    result
+}
+
 def zwaveEvent(physicalgraph.zwave.Command cmd) {
+	log.debug("Unhandled command: $cmd")
 	def evt = createEvent(displayed: false, descriptionText: "$device.displayName: $cmd")
     log.debug(evt)
     return evt
+}
+
+def test() {
+	state.findAll({it.key.startsWith('pref')}).collect({it.key}).each({ state.remove(it)})
+
+    //secure(zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingGet(userIdentifier: 3, scheduleSlotId: 1))
 }
 
 def lockAndCheck(doorLockMode) {
@@ -669,12 +874,14 @@ def poll() {
 		}
 		if(cmds) cmds << "delay 6000"
 	}
-	log.debug "poll is sending ${cmds.inspect()}, state: ${state.inspect()}"
+	if (cmds) log.debug "poll is sending ${cmds.inspect()}, state: ${state.findAll({ !it.key.startsWith('code')}).collect()}"
 	device.activity()  // workaround to keep polling from being shut off
 	cmds ?: null
 }
 
 def requestCode(codeNumber) {
+	if (codeNumber instanceof String)
+    	codeNumber = codeNumber.toInteger()
 	secure(zwave.userCodeV1.userCodeGet(userIdentifier: codeNumber))
 }
 
@@ -691,25 +898,32 @@ def reloadAllCodes() {
 }
 
 def setCode(codeNumber, code) {
-	def strcode = code
+	def strCode
+    if (code instanceof String) {
+    	if (code.isInteger()) {
+        	strCode = code
+        }
+    } else if (code instanceof Number) {
+        strCode = String.format('%1$04d', code.intValue())
+    }
+    
 	log.debug "setting code $codeNumber to $code"
-	if (code instanceof String) {
-		code = code.toList().findResults { if(it > ' ' && it != ',' && it != '-') it.toCharacter() as Short }
-	} else {
-		strcode = code.collect{ it as Character }.join()
-	}
+	
+    if (codeNumber instanceof String)
+    	codeNumber = codeNumber.toInteger()
+        
 	if (state.blankcodes) {
 		if (state["code$codeNumber"] != "") {  // Can't just set, we won't be able to tell if it was successful
-			if (state["setcode$codeNumber"] != strcode) {
-				state["resetcode$codeNumber"] = strcode
+			if (state["setcode$codeNumber"] != strCode) {
+				state["resetcode$codeNumber"] = strCode
 				return deleteCode(codeNumber)
 			}
 		} else {
-			state["setcode$codeNumber"] = strcode
+			state["setcode$codeNumber"] = strCode
 		}
 	}
 	secureSequence([
-		zwave.userCodeV1.userCodeSet(userIdentifier:codeNumber, userIdStatus:1, user:code),
+		zwave.userCodeV1.userCodeSet(userIdentifier:codeNumber, userIdStatus:1, user:strCode),
 		zwave.userCodeV1.userCodeGet(userIdentifier:codeNumber)
 	], 7000)
 }
@@ -756,6 +970,230 @@ def getCode(codeNumber) {
 
 def getAllCodes() {
 	state.findAll { it.key.startsWith 'code' }
+}
+
+def clearRepeatingSchedule(userIdentifier, slot = 1) {
+	secureSequence([zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingSet(userIdentifier: userIdentifier, scheduleSlotId: slot, setAction: 0),
+    				zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingGet(userIdentifier: userIdentifier, scheduleSlotId: slot)])
+}
+
+def clearUserRepeatingSchedules(userIdentifier) {
+
+	secureSequence([zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingSet(userIdentifier: userIdentifier, scheduleSlotId: slot, setAction: 0),
+    				zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingGet(userIdentifier: userIdentifier, scheduleSlotId: slot)])
+}
+
+def clearUserSchedules(userIdentifier) {
+	secureSequence([zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingSet(userIdentifier: userIdentifier, scheduleSlotId: slot, setAction: 0),
+    				zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingGet(userIdentifier: userIdentifier, scheduleSlotId: slot)])
+}
+
+def clearAllSchedules() {
+	secureSequence([zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingSet(userIdentifier: userIdentifier, scheduleSlotId: slot, setAction: 0),
+    				zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingGet(userIdentifier: userIdentifier, scheduleSlotId: slot)])
+}
+
+def getRepeatingSchedule(userIdentifier, slot = 1) {
+	if (userIdentifier instanceof String)
+    	userIdentifier = userIdentifier.toInteger()
+	secure(zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingGet(userIdentifier: userIdentifier, scheduleSlotId: slot))
+}
+
+def setRepeatingSchedule(userIdentifier, slot = 1,
+						 durationHour,
+					     durationMinute,
+						 startHour,
+						 startMinute,
+						 weekDayBitmask) {
+/*
+{
+Short	durationHour
+Short	durationMinute
+Short	scheduleSlotId
+Short	setAction  // 0 erase, 1 set
+Short	startHour
+Short	startMinute
+Short	userIdentifier
+Short	weekDayBitmask Sa Fr Th W Tu M Su
+                       0  0  0  0 0  0 0
+}
+*/
+	if (userIdentifier instanceof String)
+    	userIdentifier = userIdentifier.toInteger()
+    if (slot instanceof String)
+    	slot = slot.toInteger()
+    if (weekDayBitmask instanceof String)
+    	weekDayBitmask = weekDayBitmask.toInteger()
+    if (startHour instanceof String) startHour = startHour.toShort()
+    if (startMinute instanceof String) startMinute = startMinute.toShort()
+    if (durationHour instanceof String) durationHour = durationHour.toShort()
+    if (durationMinute instanceof String) durationMinute = durationMinute.toShort()
+    
+    def map = [ userIdentifier : userIdentifier,
+    			scheduleSlotId : slot,
+				durationHour:durationHour,
+				durationMinute:durationMinute,
+				setAction:1,
+				startHour:startHour,
+				startMinute:startMinute,
+				userIdentifier:userIdentifier,
+				weekDayBitmask:weekDayBitmask]
+    log.debug("set schedule with $map")
+	secureSequence([zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingSet(map),
+    				zwave.scheduleEntryLockV3.scheduleEntryLockDailyRepeatingGet(userIdentifier: userIdentifier, scheduleSlotId: slot)])
+}
+
+def getScheduleTimeOffset() {
+	log.debug("getScheduleTimeOffset()")
+    def cmd = secure(zwave.scheduleEntryLockV3.scheduleEntryLockTimeOffsetGet())
+    log.debug("getScheduleTimeOffset: $cmd")
+                                                       
+}
+
+def setScheduleTimeOffset() {
+	log.debug("setScheduleTimeOffset()")
+    
+    def hourTzo = (location.timeZone.rawOffset / (1000 * 60 * 60)).intValue()
+    def minuteOffsetDst = (location.timeZone.dstSavings / (1000 * 60)).intValue()
+    def minuteTzo = ((location.timeZone.rawOffset - (hourTzo * (1000 * 60 * 60))) / (1000 * 60)).intValue()
+    def signOffsetDst = location.timeZone.dstSavings > 0
+    def signTzo = location.timeZone.rawOffset > 0
+    
+    def map = [ hourTzo			: hourTzo.abs(), 
+    			minuteOffsetDst	: minuteOffsetDst.abs(), 
+                minuteTzo		: minuteTzo.abs(), 
+                signOffsetDst	: signOffsetDst, 
+                signTzo 		: signTzo ]
+    
+    log.debug("setTimeOffset: $map")
+	secure(zwave.scheduleEntryLockV3.scheduleEntryLockTimeOffsetSet(map))
+}
+
+def getWeekDaySchedule(userIdentifier, slot = 1) {
+	secure(zwave.scheduleEntryLockV3.scheduleEntryLockWeekDayGet())
+}
+
+def setWeekDaySchedule(userIdentifier, slot, dayOfWeek, 
+					   startHour, startMinute,
+                       stopHour, stopMinute) {                                            
+    
+    
+    if (startHour instanceof String) startHour = startHour.toShort()
+    if (startMinute instanceof String) startMinute = startMinute.toShort()
+    if (stopHour instanceof String) stopHour = stopHour.toShort()
+    if (stopMinute instanceof String) stopMinute = stopMinute.toShort()
+    if (dayOfWeek instanceof String) dayOfWeek = dayOfWeek.toShort()
+    if (slot instanceof String) slot = slot.toShort()
+    if (userIdentifier instanceof String) userIdentifier = userIdentifier.toShort()
+    
+    
+	log.debug("setWeekDaySchedule userId: $userIdentifier, slot: $slot, day: ${dayOfWeek}, start: ${startHour}:${startMinute}, stop: ${stopHour}:${stopMinute}")  
+    
+    map = [ scheduleSlotId : slot,
+            startHour: startHour,
+            startMinute: startMinute,
+            stopHour: stopHour,
+            stopMinute: stopMinute,
+            dayOfWeek: dayOfWeek,
+            setAction: 1,
+            userIdentifier: userIdentifier ]
+            
+    secureSequence([zwave.scheduleEntryLockV3.scheduleEntryLockWeekDaySet(map),
+    				zwave.scheduleEntryLockV3.scheduleEntryLockWeekDayGet()])
+    
+}
+
+def getDateSchedule(userIdentifier, slot = 1) {
+	if (userIdentifier instanceof String)
+    	userIdentifier = userIdentifier.toInteger()
+    if (slot instanceof String)
+    	slot = slot.toInteger()
+        
+	secure(zwave.scheduleEntryLockV3.scheduleEntryLockYearDayGet(userIdentifier : userIdentifier, scheduleSlotId : slot))
+}
+
+def setDateSchedule(userIdentifier, slot, 
+				    startDay, startHour, startMinute, startMonth, startYear,
+                    stopDay, stopHour, stopMinute, stopMonth, stopYear) {
+/*
+Short	scheduleSlotId
+Short	startDay
+Short	startHour
+Short	startMinute
+Short	startMonth
+Short	startYear
+Short	stopDay
+Short	stopHour
+Short	stopMinute
+Short	stopMonth
+Short	stopYear
+Short	userIdentifier
+*/
+	log.debug("setDateSchedule userId: $userIdentifier, slot: $slot, start: ${startHour}:${startMinute} ${startMonth}/${startDay}/${startYear}, stop: ${stopHour}:${stopMinute} ${stopMonth}/${stopDay}/$stopYear} ")                                                    
+    
+    if (startDay instanceof String) startDay = startDay.toShort()
+    if (startHour instanceof String) startHour = startHour.toShort()
+    if (startMinute instanceof String) startMinute = startMinute.toShort()
+    if (startMonth instanceof String) startMonth = startMonth.toShort()
+    if (startYear instanceof String) startYear = startYear.toShort()
+    if (stopDay instanceof String) stopDay = stopDay.toShort()
+    if (stopHour instanceof String) stopHour = stopHour.toShort()
+    if (stopMinute instanceof String) stopMinute = stopMinute.toShort()
+    if (stopMonth instanceof String) stopMonth = stopMonth.toShort()
+    if (stopYear instanceof String) stopYear = stopYear.toShort()
+    if (userIdentifier instanceof String) userIdentifier = userIdentifier.toShort()
+    
+    def map = [ startDay: startDay,
+                startHour: startHour,
+                startMinute: startMinute,
+                startMonth: startMonth,
+                startYear: startYear,
+                stopDay: stopDay,
+                stopHour: stopHour,
+                stopMinute: stopMinute,
+                stopMonth: stopMonth,
+                stopYear: stopYear,
+                setAction: 1,
+                userIdentifier: userIdentifier ]
+            
+    secureSequence([zwave.scheduleEntryLockV3.scheduleEntryLockYearDaySet(map),
+    				zwave.scheduleEntryLockV3.scheduleEntryLockYearDayGet()])
+    
+}
+
+def getTimeParameters() {
+	log.debug("getTimeParameters()")
+	secure(zwave.timeParametersV1.timeParametersGet())
+}
+
+def setTimeParameters() {
+/*
+Short	day
+Short	hourUtc
+Short	minuteUtc
+Short	month
+Short	secondUtc
+Integer	year
+*/
+
+	log.debug("setTimeParameters()")
+	def now = new Date()
+	def map = [ day : now[DAY_OF_MONTH],
+    			hourUtc : now[HOUR_OF_DAY],
+                minuteUtc : now[MINUTE],
+                month : now[MONTH],
+                secondUtc : now[SECOND],
+                year : now[YEAR] ]
+                
+    
+	secure(zwave.timeParametersV1.timeParametersSet(map))
+}
+
+def setTime() {
+	// The null state.time.delta will cause the handler for the ScheduleTimeOffsetReport
+    // to send the getTimeParameters query.
+	state.time = null
+	delayBetween([setTimeParameters(), setScheduleTimeOffset(), getScheduleTimeOffset() ], 4200)
 }
 
 def update() {
