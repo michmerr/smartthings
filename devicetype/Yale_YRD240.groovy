@@ -793,7 +793,7 @@ def setBatteryLevel(level) {
     def map = [ name: "battery", unit: "%" ]
     
     if (level <= 1 || level == 0xFF) {
-    		def description = "Battery ${level == 0 ? 'dead' : 'critical'"
+    		def description = "Battery ${level == 0 ? 'dead' : 'critical'}"
     		def fault = addFault(type : "battery",
                                  level: level == 0 ? "critical" : "error",
                                  descriptionText: description )
@@ -2293,6 +2293,7 @@ def getFaultTypeMap() {
       "user" : [ multiple : true ],
       "jammed" : [ multiple : false ],
       "battery" : [ multiple : false, replace: { f, o -> higherLevel(f.level, o) } ]
+      ]
 }
 
 /**
